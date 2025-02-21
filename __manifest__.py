@@ -6,7 +6,7 @@
     'category': 'Custom',
     'description': """ Integración con factura electrónica de Infile """,
     'author': 'aquíH',
-    'website': 'http://aquih.com/',
+    'website': 'http://www.aquih.com/',
     'depends': ['fel_gt'],
     'data': [
         'views/account_views.xml',
