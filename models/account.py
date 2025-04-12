@@ -85,7 +85,7 @@ class AccountMove(models.Model):
                     else:
                         factura.error_certificador(r.text)
                 except Exception as e:
-                    factura.error_certificador(e)
+                    factura.error_certificador(str(e))
 
         return True
         
