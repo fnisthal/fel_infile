@@ -20,6 +20,8 @@ class AccountMove(models.Model):
     pdf_fel = fields.Char('PDF FEL', copy=False)
     
     def _post(self, soft=True):
+        if self.env.context.get('skip_fel_certification'):
+            return super(AccountMove, self)._post(soft)
         if self.certificar():
             return super(AccountMove, self)._post(soft)
 
@@ -27,7 +29,8 @@ class AccountMove(models.Model):
         for factura in self:
             if factura.requiere_certificacion('infile'):
                 self.ensure_one()
-                factura.error_pre_validacion()
+                if factura.error_pre_validacion():
+                    continue
 
                 try:
                     if factura.company_id.buscar_nombre_para_dte_fel and not factura.partner_id.nombre_facturacion_fel:
@@ -88,61 +91,72 @@ class AccountMove(models.Model):
                     factura.error_certificador(str(e))
 
         return True
+
+    def _anular_fel_certificador(self):
+        self.ensure_one()
+        factura = self
+
+        if not factura.requiere_certificacion('infile'):
+            return super(AccountMove, self)._anular_fel_certificador()
+
+        import http.client
+        logging.basicConfig(level=logging.DEBUG)
+        httpclient_logger = logging.getLogger("http.client")
+
+        def httpclient_log(*args):
+            httpclient_logger.log(logging.DEBUG, " ".join(args))
+
+        http.client.print = httpclient_log
+        http.client.HTTPConnection.debuglevel = 1
+
+        dte = factura.dte_anulacion()
+        xmls = etree.tostring(dte, encoding="UTF-8")
+        xmls_base64 = base64.b64encode(xmls)
+        logging.warning(xmls)
+
+        headers = { "Content-Type": "application/json" }
+        data = {
+            "llave": factura.company_id.token_firma_fel,
+            "archivo": xmls_base64.decode("utf-8"),
+            "codigo": factura.company_id.vat.replace('-',''),
+            "alias": factura.company_id.usuario_fel,
+            "es_anulacion": "S",
+        }
+        r = requests.post('https://signer-emisores.feel.com.gt/sign_solicitud_firmas/firma_xml', json=data, headers=headers)
+        logging.warn(r.text)
+        firma_json = r.json()
+        if firma_json["resultado"]:
+            identificador = factura.journal_id.code+str(factura.id)
+            if factura.contingencia_fel:
+                identificador = factura.journal_id.code+'(CONT)'+str(factura.numero_acceso_fel)
+
+            headers = {
+                "USUARIO": factura.company_id.usuario_fel,
+                "LLAVE": factura.company_id.clave_fel,
+                "IDENTIFICADOR": identificador,
+                "Content-Type": "application/json",
+            }
+            data = {
+                "nit_emisor": factura.company_id.vat.replace('-',''),
+                "correo_copia": factura.company_id.email,
+                "xml_dte": firma_json["archivo"]
+            }
+            r = requests.post("https://certificador.feel.com.gt/fel/anulacion/v2/dte/", json=data, headers=headers)
+            logging.warn(r.text)
+            certificacion_json = r.json()
+            if not certificacion_json["resultado"]:
+                raise UserError(str(certificacion_json["descripcion_errores"]))
+            return {
+                'documento_xml_fel': xmls_base64,
+                'documento_xml_fel_name': 'documento_anulacion_fel.xml',
+                'resultado_xml_fel': certificacion_json.get("xml_certificado") or base64.b64encode(r.text.encode("utf-8")),
+                'resultado_xml_fel_name': 'resultado_anulacion_fel.xml',
+            }
+        else:
+            raise UserError(r.text)
         
     def button_cancel(self):
-        result = super(AccountMove, self).button_cancel()
-        for factura in self:
-            if factura.requiere_certificacion() and factura.firma_fel:
-                                    
-                import http.client
-                logging.basicConfig(level=logging.DEBUG)
-                httpclient_logger = logging.getLogger("http.client")
-                def httpclient_log(*args):
-                    httpclient_logger.log(logging.DEBUG, " ".join(args))
-
-                http.client.print = httpclient_log
-                http.client.HTTPConnection.debuglevel = 1
-                    
-                dte = factura.dte_anulacion()
-                
-                xmls = etree.tostring(dte, encoding="UTF-8")
-                xmls_base64 = base64.b64encode(xmls)
-                logging.warning(xmls)
-
-                headers = { "Content-Type": "application/json" }
-                data = {
-                    "llave": factura.company_id.token_firma_fel,
-                    "archivo": xmls_base64.decode("utf-8"),
-                    "codigo": factura.company_id.vat.replace('-',''),
-                    "alias": factura.company_id.usuario_fel,
-                    "es_anulacion": "S",
-                }
-                r = requests.post('https://signer-emisores.feel.com.gt/sign_solicitud_firmas/firma_xml', json=data, headers=headers)
-                logging.warn(r.text)
-                firma_json = r.json()
-                if firma_json["resultado"]:
-                    identificador = factura.journal_id.code+str(factura.id)
-                    if factura.contingencia_fel:
-                        identificador = factura.journal_id.code+'(CONT)'+str(factura.numero_acceso_fel)
-
-                    headers = {
-                        "USUARIO": factura.company_id.usuario_fel,
-                        "LLAVE": factura.company_id.clave_fel,
-                        "IDENTIFICADOR": identificador,
-                        "Content-Type": "application/json",
-                    }
-                    data = {
-                        "nit_emisor": factura.company_id.vat.replace('-',''),
-                        "correo_copia": factura.company_id.email,
-                        "xml_dte": firma_json["archivo"]
-                    }
-                    r = requests.post("https://certificador.feel.com.gt/fel/anulacion/v2/dte/", json=data, headers=headers)
-                    logging.warn(r.text)
-                    certificacion_json = r.json()
-                    if not certificacion_json["resultado"]:
-                        raise UserError(str(certificacion_json["descripcion_errores"]))
-                else:
-                    raise UserError(r.text)
+        return super(AccountMove, self).button_cancel()
 
 class AccountJournal(models.Model):
     _inherit = "account.journal"
